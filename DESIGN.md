@@ -6,104 +6,149 @@ This document outlines the architectural decisions, database models, API specifi
 
 ## 1. Database Schema
 
-The database is built on **PostgreSQL** using **Prisma ORM**. To keep user management simple and centralized while maintaining strict role separation, we employ a unified `User` model with a role enum.
+The database is built on **PostgreSQL** using **Prisma ORM**. To keep user management simple and centralized while maintaining strict role separation, we employ a unified `users` model.
 
 ```mermaid
 erDiagram
-    USER {
+    users {
         uuid id PK
         string email UK
         string password
         string name
-        string role "OWNER | CUSTOMER"
-        datetime createdAt
-        datetime updatedAt
+        string role "owner | customer"
+        datetime created_at
+        datetime updated_at
     }
-    SERVICE {
+    services {
         uuid id PK
-        uuid ownerId FK
+        uuid owner_id FK
         string name
         int duration "in minutes"
         int price "in cents"
-        datetime createdAt
-        datetime updatedAt
-        datetime deletedAt "nullable"
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at "nullable"
     }
-    AVAILABILITY {
+    availabilities {
         uuid id PK
-        uuid ownerId FK
-        int dayOfWeek "0 (Sunday) to 6 (Saturday)"
-        string startTime "HH:MM format"
-        string endTime "HH:MM format"
-        datetime createdAt
-        datetime updatedAt
+        uuid service_id FK
+        int day_of_week "0 (Sunday) to 6 (Saturday)"
+        boolean is_working
+        string start_time "HH:MM format, nullable"
+        string end_time "HH:MM format, nullable"
+        datetime created_at
+        datetime updated_at
     }
-    BOOKING {
+    availability_exceptions {
         uuid id PK
-        uuid customerId FK
-        uuid serviceId FK
-        uuid ownerId FK
-        datetime startTime "UTC"
-        datetime endTime "UTC"
-        string status "PENDING | CONFIRMED | CANCELLED | COMPLETED | NOSHOW"
-        datetime createdAt
-        datetime updatedAt
+        uuid service_id FK
+        datetime date "specific date"
+        boolean is_working
+        string start_time "HH:MM format, nullable"
+        string end_time "HH:MM format, nullable"
+        datetime created_at
+        datetime updated_at
+    }
+    bookings {
+        uuid id PK
+        uuid customer_id FK
+        uuid service_id FK
+        uuid owner_id FK
+        datetime start_time "UTC"
+        datetime end_time "UTC"
+        string status "pending | confirmed | cancelled | completed | noshow"
+        datetime created_at
+        datetime updated_at
+    }
+    notifications {
+        uuid id PK
+        uuid user_id FK
+        string title
+        string message
+        boolean is_read
+        datetime created_at
+        datetime updated_at
     }
 
-    USER ||--o{ SERVICE : "offers"
-    USER ||--o{ AVAILABILITY : "sets"
-    USER ||--o{ BOOKING : "books (as customer)"
-    SERVICE ||--o{ BOOKING : "associated with"
+    users ||--o{ services : "offers"
+    users ||--o{ bookings : "books (as customer)"
+    users ||--o{ bookings : "receives (as owner)"
+    users ||--o{ notifications : "receives"
+    services ||--o{ availabilities : "has weekly hours"
+    services ||--o{ availability_exceptions : "has specific date exceptions"
+    services ||--o{ bookings : "associated with"
 ```
 
 ### Table Definitions & Fields
 
-#### 1. `User` Table
+#### 1. `users` Table
 Holds both Business Owners and Customers.
-*   `id`: `UUID` (Primary Key, default: `gen_random_uuid()`)
+*   `id`: `UUID` (Primary Key)
 *   `email`: `VARCHAR(255)` (Unique index, normalized to lowercase)
 *   `password`: `VARCHAR(255)` (Bcrypt hashed password)
 *   `name`: `VARCHAR(100)`
-*   `role`: `ENUM('OWNER', 'CUSTOMER')`
-*   `createdAt` & `updatedAt`: `TIMESTAMP`
+*   `role`: `VARCHAR(20)` (value is `'owner'` or `'customer'`)
+*   `created_at` & `updated_at`: `TIMESTAMP`
 
-#### 2. `Service` Table
+#### 2. `services` Table
 Services offered by Business Owners.
 *   `id`: `UUID` (Primary Key)
-*   `ownerId`: `UUID` (Foreign Key to `User.id`, cascades on delete, index)
+*   `owner_id`: `UUID` (Foreign Key to `users.id`, cascades on delete, index)
 *   `name`: `VARCHAR(100)`
 *   `duration`: `INTEGER` (Duration of service in minutes, e.g. 30, 60)
 *   `price`: `INTEGER` (Price stored in cents to prevent floating point inaccuracies, e.g. $15.50 = 1550)
-*   `createdAt` & `updatedAt`: `TIMESTAMP`
-*   `deletedAt`: `TIMESTAMP` (Nullable; used for soft delete to preserve historical booking data)
+*   `created_at` & `updated_at`: `TIMESTAMP`
+*   `deleted_at`: `TIMESTAMP` (Nullable; used for soft delete to preserve historical booking data)
 
-#### 3. `Availability` Table
-Defines weekly working hours for Business Owners.
+#### 3. `availabilities` Table
+Defines weekly working hours for each Service.
 *   `id`: `UUID` (Primary Key)
-*   `ownerId`: `UUID` (Foreign Key to `User.id`, cascades on delete, index)
-*   `dayOfWeek`: `INTEGER` (Values 0 to 6 representing Sunday to Saturday)
-*   `startTime`: `VARCHAR(5)` (Represented in HH:MM format, e.g. "09:00")
-*   `endTime`: `VARCHAR(5)` (Represented in HH:MM format, e.g. "17:00")
-*   `createdAt` & `updatedAt`: `TIMESTAMP`
+*   `service_id`: `UUID` (Foreign Key to `services.id`, cascades on delete, index)
+*   `day_of_week`: `INTEGER` (Values 0 to 6 representing Sunday to Saturday)
+*   `is_working`: `BOOLEAN` (Indicates if the service is open/offered on this day of the week)
+*   `start_time`: `VARCHAR(5)` (HH:MM format, e.g. "09:00", nullable)
+*   `end_time`: `VARCHAR(5)` (HH:MM format, e.g. "17:00", nullable)
+*   `created_at` & `updated_at`: `TIMESTAMP`
 
-#### 4. `Booking` Table
+#### 4. `availability_exceptions` Table
+Defines specific calendar overrides for services.
+*   `id`: `UUID` (Primary Key)
+*   `service_id`: `UUID` (Foreign Key to `services.id`, cascades on delete, index)
+*   `date`: `TIMESTAMP` (The specific override date)
+*   `is_working`: `BOOLEAN` (True if open on this date, false if closed)
+*   `start_time`: `VARCHAR(5)` (HH:MM format, nullable)
+*   `end_time`: `VARCHAR(5)` (HH:MM format, nullable)
+*   `created_at` & `updated_at`: `TIMESTAMP`
+
+#### 5. `bookings` Table
 Holds reservations made by Customers.
 *   `id`: `UUID` (Primary Key)
-*   `customerId`: `UUID` (Foreign Key to `User.id`, restrict delete)
-*   `serviceId`: `UUID` (Foreign Key to `Service.id`, restrict delete)
-*   `ownerId`: `UUID` (Foreign Key to `User.id`, restrict delete, index)
-*   `startTime`: `TIMESTAMP` (UTC start date and time)
-*   `endTime`: `TIMESTAMP` (UTC end date and time, auto-calculated as `startTime + service.duration`)
-*   `status`: `ENUM('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'NOSHOW')` (default: `'CONFIRMED'`)
-*   `createdAt` & `updatedAt`: `TIMESTAMP`
+*   `customer_id`: `UUID` (Foreign Key to `users.id`, restrict delete)
+*   `service_id`: `UUID` (Foreign Key to `services.id`, restrict delete)
+*   `owner_id`: `UUID` (Foreign Key to `users.id`, restrict delete, index)
+*   `start_time`: `TIMESTAMP` (UTC start date and time)
+*   `end_time`: `TIMESTAMP` (UTC end date and time, auto-calculated as `start_time + service.duration`)
+*   `status`: `VARCHAR(20)` (value is `'pending'`, `'confirmed'`, `'cancelled'`, `'completed'`, or `'noshow'`)
+*   `created_at` & `updated_at`: `TIMESTAMP`
+
+#### 6. `notifications` Table
+Stores notifications for owners and customers.
+*   `id`: `UUID` (Primary Key)
+*   `user_id`: `UUID` (Foreign Key to `users.id`, cascades on delete, index)
+*   `title`: `VARCHAR(255)` (The brief title of the notification)
+*   `message`: `TEXT` (The notification body description)
+*   `is_read`: `BOOLEAN` (Indicates read status, default is false)
+*   `created_at` & `updated_at`: `TIMESTAMP`
 
 ---
 
 ### Database Schema Design Justifications
-1.  **Unified User Model with Role Enum**: Simplifies authorization guards and JWT validation. Since owners and customers share basic properties (name, email, credentials), single-table inheritance is the cleanest design pattern.
+1.  **Unified User Model with lowercase role column**: Simplifies authorization guards and JWT validation. Since owners and customers share basic properties (name, email, credentials), single-table inheritance is the cleanest design pattern.
 2.  **Price in Cents**: Avoids decimal precision issues inherent in float/double types when adding, subtracting, or rendering currency totals.
-3.  **Soft Service Deletion (`deletedAt`)**: Essential so that existing appointments do not crash when pulling their service info, but ensures new customers cannot find or book the service.
-4.  **Redundant `ownerId` in Booking**: Denormalized to quickly query a business owner's upcoming schedule without performing a JOIN through the `Service` table.
+3.  **Soft Service Deletion (`deleted_at`)**: Essential so that existing appointments do not crash when pulling their service info, but ensures new customers cannot find or book the service.
+4.  **Redundant `owner_id` in Booking**: Denormalized to quickly query a business owner's upcoming schedule without performing a JOIN through the `services` table, and ensures we can enforce owner conflict prevention.
+5.  **Per-Service Availability and Exception Overrides**: Links availability directly to `services` so owners can customize hours per service. Allows setting specific exception dates to handle holiday closures or one-off working slots.
+6.  **Notifications System**: Keeps track of alerts for bookings and cancellations to keep users informed in real-time.
 
 ---
 

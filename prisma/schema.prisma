@@ -1,0 +1,105 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  password   String
+  name       String
+  role       String   // "owner" | "customer"
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  services          Service[]      @relation("UserServices")
+  customer_bookings Booking[]      @relation("CustomerBookings")
+  owner_bookings    Booking[]      @relation("OwnerBookings")
+  notifications     Notification[] @relation("UserNotifications")
+
+  @@map("users")
+}
+
+model Service {
+  id         String    @id @default(uuid())
+  owner_id   String
+  name       String
+  duration   Int       // in minutes
+  price      Int       // in cents
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime? // nullable for soft-delete
+
+  owner          User                    @relation("UserServices", fields: [owner_id], references: [id], onDelete: Cascade)
+  availabilities Availability[]          @relation("ServiceAvailabilities")
+  exceptions     AvailabilityException[] @relation("ServiceExceptions")
+  bookings       Booking[]               @relation("ServiceBookings")
+
+  @@map("services")
+}
+
+model Availability {
+  id          String   @id @default(uuid())
+  service_id  String
+  day_of_week Int      // 0 (Sunday) to 6 (Saturday)
+  is_working  Boolean
+  start_time  String?  // "HH:MM"
+  end_time    String?  // "HH:MM"
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  service Service @relation("ServiceAvailabilities", fields: [service_id], references: [id], onDelete: Cascade)
+
+  @@map("availabilities")
+}
+
+model AvailabilityException {
+  id          String   @id @default(uuid())
+  service_id  String
+  date        DateTime // specific calendar date
+  is_working  Boolean
+  start_time  String?  // "HH:MM"
+  end_time    String?  // "HH:MM"
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  service Service @relation("ServiceExceptions", fields: [service_id], references: [id], onDelete: Cascade)
+
+  @@map("availability_exceptions")
+}
+
+model Booking {
+  id          String   @id @default(uuid())
+  customer_id String
+  service_id  String
+  owner_id    String
+  start_time  DateTime
+  end_time    DateTime
+  status      String   // "pending", "confirmed", "cancelled", "completed", "noshow"
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  customer User    @relation("CustomerBookings", fields: [customer_id], references: [id], onDelete: Restrict)
+  owner    User    @relation("OwnerBookings", fields: [owner_id], references: [id], onDelete: Restrict)
+  service  Service @relation("ServiceBookings", fields: [service_id], references: [id], onDelete: Restrict)
+
+  @@map("bookings")
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  user_id    String
+  title      String
+  message    String
+  is_read    Boolean  @default(false)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user User @relation("UserNotifications", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
