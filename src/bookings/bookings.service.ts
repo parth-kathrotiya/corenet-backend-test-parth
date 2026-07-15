@@ -29,9 +29,18 @@ export class BookingsService {
    */
   async getAvailableSlots(serviceId: string, date: string): Promise<string[]> {
     // Validate date format
+    let dateStr = date;
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(date)) {
-      throw new BadRequestException('Date must be in YYYY-MM-DD format.');
+    if (!dateRegex.test(dateStr)) {
+      if (/^\d{2}-\d{2}-\d{4}$/.test(dateStr)) {
+        const [d, m, y] = dateStr.split('-');
+        dateStr = `${y}-${m}-${d}`;
+      } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
+        const [d, m, y] = dateStr.split('/');
+        dateStr = `${y}-${m}-${d}`;
+      } else {
+        throw new BadRequestException('Date must be in YYYY-MM-DD format.');
+      }
     }
 
     const service = await this.prisma.service.findUnique({
@@ -49,7 +58,7 @@ export class BookingsService {
     // Parse the date in local calendar terms (treat as UTC midnight for day
     // boundary calculations — the client sends YYYY-MM-DD which is interpreted
     // as a local date).
-    const [year, month, day] = date.split('-').map(Number);
+    const [year, month, day] = dateStr.split('-').map(Number);
 
     // day_of_week: 0 = Sunday … 6 = Saturday (matching JS Date.getDay())
     const jsDate = new Date(Date.UTC(year, month - 1, day));
@@ -250,7 +259,7 @@ export class BookingsService {
           owner_id: service.owner_id,
           start_time: startDate,
           end_time: endDate,
-          status: 'confirmed',
+          status: 'pending',
         },
         include: {
           service: true,
@@ -265,25 +274,112 @@ export class BookingsService {
         timeZone: 'Asia/Kolkata',
       });
 
-      // Notification for Owner
+      // Notification for Owner — request needs action
       await tx.notification.create({
         data: {
           user_id: service.owner_id,
-          title: 'New Booking Received 📅',
-          message: `${booking.customer.name} booked "${service.name}" on ${displayTime}.`,
+          title: 'New Booking Request 📋',
+          message: `${booking.customer.name} requested "${service.name}" on ${displayTime}. Please confirm or decline.`,
         },
       });
 
-      // Notification for Customer
+      // Notification for Customer — awaiting confirmation
       await tx.notification.create({
         data: {
           user_id: customerId,
-          title: 'Booking Confirmed ✅',
-          message: `Your booking for "${service.name}" is confirmed for ${displayTime}.`,
+          title: 'Booking Request Sent ⏳',
+          message: `Your request for "${service.name}" on ${displayTime} is awaiting owner confirmation.`,
         },
       });
 
       return booking;
+    });
+  }
+
+  // ─── Owner: Update Booking Status ─────────────────────────────────────────
+
+  /**
+   * Allows an owner to transition a booking through the allowed states:
+   *   pending  → confirmed | cancelled
+   *   confirmed (future) → cancelled
+   *   confirmed (past)   → completed | noshow
+   * A customer notification is sent for every transition.
+   */
+  async updateOwnerBookingStatus(bookingId: string, ownerId: string, newStatus: string) {
+    const ALLOWED_STATUSES = ['confirmed', 'cancelled', 'completed', 'noshow'];
+    if (!ALLOWED_STATUSES.includes(newStatus)) {
+      throw new BadRequestException(`Invalid status: ${newStatus}.`);
+    }
+
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { service: true, customer: { select: { id: true, name: true } } },
+    });
+
+    if (!booking) throw new NotFoundException('Booking not found.');
+    if (booking.owner_id !== ownerId) {
+      throw new ForbiddenException('You cannot update this booking.');
+    }
+
+    const now = new Date();
+    const bookingTime = new Date(booking.start_time);
+    const isPast = bookingTime < now;
+
+    // Define valid next-states per current state
+    const validTransitions: Record<string, string[]> = {
+      pending: ['confirmed', 'cancelled'],
+      confirmed: isPast ? ['completed', 'noshow', 'cancelled'] : ['cancelled'],
+    };
+
+    const allowed = validTransitions[booking.status] ?? [];
+    if (!allowed.includes(newStatus)) {
+      throw new BadRequestException(
+        `Cannot transition booking from "${booking.status}" to "${newStatus}"` +
+          (booking.status === 'confirmed' && !isPast && ['completed', 'noshow'].includes(newStatus)
+            ? ' — booking time has not passed yet.'
+            : '.'),
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.booking.update({
+        where: { id: bookingId },
+        data: { status: newStatus },
+      });
+
+      const displayTime = bookingTime.toLocaleString('en-IN', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: 'Asia/Kolkata',
+      });
+
+      const customerNotifications: Record<string, { title: string; message: string }> = {
+        confirmed: {
+          title: 'Booking Confirmed ✅',
+          message: `Great news! Your booking for "${booking.service.name}" on ${displayTime} has been confirmed.`,
+        },
+        cancelled: {
+          title: 'Booking Cancelled ❌',
+          message: `Your booking for "${booking.service.name}" on ${displayTime} has been cancelled by the service provider.`,
+        },
+        completed: {
+          title: 'Appointment Completed 🎉',
+          message: `Your appointment for "${booking.service.name}" has been marked as completed. Thank you!`,
+        },
+        noshow: {
+          title: 'Marked as No-show 😔',
+          message: `Your appointment for "${booking.service.name}" on ${displayTime} was marked as no-show.`,
+        },
+      };
+
+      const notif = customerNotifications[newStatus];
+      if (notif) {
+        await tx.notification.create({
+          data: { user_id: booking.customer_id, title: notif.title, message: notif.message },
+        });
+      }
+
+      return updated;
     });
   }
 
@@ -414,12 +510,11 @@ export class BookingsService {
     return this.prisma.booking.findMany({
       where: {
         customer_id: customerId,
-        status: { in: ['pending', 'confirmed'] },
-        start_time: { gte: new Date() },
         ...(serviceId ? { service_id: serviceId } : {}),
       },
       include: {
         service: { select: { id: true, name: true, duration: true, price: true } },
+        owner: { select: { id: true, name: true, email: true } },
       },
       orderBy: { start_time: 'asc' },
     });
@@ -448,6 +543,54 @@ export class BookingsService {
         status: true,
       },
       orderBy: { start_time: 'asc' },
+    });
+  }
+
+  // ─── Owner: All Bookings (past + future) ─────────────────────────────────────
+
+  async getAllOwnerBookings(ownerId: string) {
+    return this.prisma.booking.findMany({
+      where: { owner_id: ownerId },
+      include: {
+        customer: { select: { id: true, name: true, email: true } },
+        service: { select: { id: true, name: true, duration: true, price: true } },
+      },
+      orderBy: { start_time: 'desc' },
+    });
+  }
+
+  // ─── Owner: Cancel a Booking ──────────────────────────────────────────────
+
+  async cancelOwnerBooking(bookingId: string, ownerId: string) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { service: true },
+    });
+
+    if (!booking) throw new NotFoundException('Booking not found.');
+    if (booking.owner_id !== ownerId) {
+      throw new ForbiddenException('You cannot cancel this booking.');
+    }
+    if (!['pending', 'confirmed'].includes(booking.status)) {
+      throw new BadRequestException('Only pending or confirmed bookings can be cancelled.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.booking.update({
+        where: { id: bookingId },
+        data: { status: 'cancelled' },
+      });
+
+      // Notify the customer
+      await tx.notification.create({
+        data: {
+          user_id: booking.customer_id,
+          title: 'Booking Cancelled ❌',
+          message: `Your booking for "${booking.service.name}" has been cancelled by the service provider.`,
+        },
+      });
+
+      return updated;
     });
   }
 }

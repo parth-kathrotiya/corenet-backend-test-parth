@@ -6,6 +6,7 @@ import { JwtGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { GetUser } from '../auth/decorators/user.decorator';
+import { CreateExceptionDto } from './dto/create-exception.dto';
 
 @Controller('api/services')
 @UseGuards(JwtGuard, RolesGuard)
@@ -46,5 +47,36 @@ export class ServicesController {
     @GetUser('sub') ownerId: string,
   ) {
     return this.servicesService.remove(id, ownerId);
+  }
+
+  // ─── Availability Exceptions ─────────────────────────────────────────────
+
+  @Get(':id/exceptions')
+  @Roles('owner')
+  async getExceptions(
+    @Param('id') id: string,
+    @GetUser('sub') ownerId: string,
+  ) {
+    return this.servicesService.getExceptions(id, ownerId);
+  }
+
+  @Post(':id/exceptions')
+  @Roles('owner')
+  async createException(
+    @Param('id') id: string,
+    @Body() dto: CreateExceptionDto,
+    @GetUser('sub') ownerId: string,
+  ) {
+    return this.servicesService.createException(id, ownerId, dto);
+  }
+
+  @Delete(':id/exceptions/:exId')
+  @Roles('owner')
+  async deleteException(
+    @Param('id') id: string,
+    @Param('exId') exId: string,
+    @GetUser('sub') ownerId: string,
+  ) {
+    return this.servicesService.deleteException(id, exId, ownerId);
   }
 }

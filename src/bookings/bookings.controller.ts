@@ -22,6 +22,20 @@ export class BookingsController {
   constructor(private readonly bookingsService: BookingsService) {}
 
   /**
+   * PATCH /api/bookings/:id/owner-status  — owner sets confirmed|cancelled|completed|noshow
+   * Must come before /:id/cancel and /:id/owner-cancel to avoid route conflicts.
+   */
+  @Patch(':id/owner-status')
+  @Roles('owner')
+  async updateOwnerBookingStatus(
+    @Param('id') id: string,
+    @Body('status') status: string,
+    @GetUser('sub') ownerId: string,
+  ) {
+    return this.bookingsService.updateOwnerBookingStatus(id, ownerId, status);
+  }
+
+  /**
    * GET /api/bookings/available-slots?serviceId=&date=YYYY-MM-DD
    * Accessible by customer or owner (any authenticated user).
    */
@@ -78,6 +92,15 @@ export class BookingsController {
   }
 
   /**
+   * GET /api/bookings/owner/all  — all bookings (past + future) for the logged-in owner
+   */
+  @Get('owner/all')
+  @Roles('owner')
+  async getAllOwnerBookings(@GetUser('sub') ownerId: string) {
+    return this.bookingsService.getAllOwnerBookings(ownerId);
+  }
+
+  /**
    * POST /api/bookings  — customer creates a booking
    */
   @Post()
@@ -99,5 +122,17 @@ export class BookingsController {
     @GetUser('sub') customerId: string,
   ) {
     return this.bookingsService.cancelBooking(id, customerId);
+  }
+
+  /**
+   * PATCH /api/bookings/:id/owner-cancel  — owner cancels one of their service's bookings
+   */
+  @Patch(':id/owner-cancel')
+  @Roles('owner')
+  async cancelOwnerBooking(
+    @Param('id') id: string,
+    @GetUser('sub') ownerId: string,
+  ) {
+    return this.bookingsService.cancelOwnerBooking(id, ownerId);
   }
 }

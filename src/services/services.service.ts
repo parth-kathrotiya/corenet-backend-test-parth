@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateServiceDto } from './dto/create-service.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
+import { CreateExceptionDto } from './dto/create-exception.dto';
 
 @Injectable()
 export class ServicesService {
@@ -60,6 +61,11 @@ export class ServicesService {
           availabilities: {
             orderBy: {
               day_of_week: 'asc',
+            },
+          },
+          exceptions: {
+            orderBy: {
+              date: 'asc',
             },
           },
         },
@@ -173,5 +179,72 @@ export class ServicesService {
     });
 
     return { id, message: 'Service archived successfully.' };
+  }
+
+  // ─── Availability Exception CRUD ───────────────────────────────────────────────
+
+  async getExceptions(serviceId: string, ownerId: string) {
+    const service = await this.prisma.service.findUnique({ where: { id: serviceId } });
+    if (!service) throw new NotFoundException('Service not found.');
+    if (service.owner_id !== ownerId) throw new ForbiddenException('Access denied.');
+
+    return this.prisma.availabilityException.findMany({
+      where: { service_id: serviceId },
+      orderBy: { date: 'asc' },
+    });
+  }
+
+  async createException(serviceId: string, ownerId: string, dto: CreateExceptionDto) {
+    const service = await this.prisma.service.findUnique({ where: { id: serviceId } });
+    if (!service) throw new NotFoundException('Service not found.');
+    if (service.owner_id !== ownerId) throw new ForbiddenException('Access denied.');
+
+    let dateStr = dto.date;
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(dateStr)) {
+      if (/^\d{2}-\d{2}-\d{4}$/.test(dateStr)) {
+        const [d, m, y] = dateStr.split('-');
+        dateStr = `${y}-${m}-${d}`;
+      } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
+        const [d, m, y] = dateStr.split('/');
+        dateStr = `${y}-${m}-${d}`;
+      } else {
+        throw new BadRequestException('Date must be in YYYY-MM-DD format.');
+      }
+    }
+
+    if (dto.is_working && (!dto.start_time || !dto.end_time)) {
+      throw new BadRequestException('start_time and end_time are required for working exceptions.');
+    }
+
+    // Parse date as UTC midnight
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dateUTC = new Date(Date.UTC(y, m - 1, d));
+
+    return this.prisma.availabilityException.create({
+      data: {
+        service_id: serviceId,
+        date: dateUTC,
+        is_working: dto.is_working,
+        start_time: dto.is_working ? (dto.start_time ?? null) : null,
+        end_time: dto.is_working ? (dto.end_time ?? null) : null,
+      },
+    });
+  }
+
+  async deleteException(serviceId: string, exceptionId: string, ownerId: string) {
+    const service = await this.prisma.service.findUnique({ where: { id: serviceId } });
+    if (!service) throw new NotFoundException('Service not found.');
+    if (service.owner_id !== ownerId) throw new ForbiddenException('Access denied.');
+
+    const exception = await this.prisma.availabilityException.findUnique({
+      where: { id: exceptionId },
+    });
+    if (!exception || exception.service_id !== serviceId) {
+      throw new NotFoundException('Exception not found for this service.');
+    }
+
+    await this.prisma.availabilityException.delete({ where: { id: exceptionId } });
+    return { id: exceptionId, message: 'Exception removed.' };
   }
 }
