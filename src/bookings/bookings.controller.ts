@@ -7,10 +7,13 @@ import {
   Param,
   Query,
   UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { BookingsService } from './bookings.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
+import { GetAvailableSlotsDto } from './dto/get-available-slots.dto';
+import { GetServiceBookingBlocksDto } from './dto/get-service-booking-blocks.dto';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -28,11 +31,11 @@ export class BookingsController {
   @Patch(':id/owner-status')
   @Roles('owner')
   async updateOwnerBookingStatus(
-    @Param('id') id: string,
-    @Body('status') status: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateBookingStatusDto,
     @GetUser('sub') ownerId: string,
   ) {
-    return this.bookingsService.updateOwnerBookingStatus(id, ownerId, status);
+    return this.bookingsService.updateOwnerBookingStatus(id, ownerId, dto.status);
   }
 
   /**
@@ -40,11 +43,8 @@ export class BookingsController {
    * Accessible by customer or owner (any authenticated user).
    */
   @Get('available-slots')
-  async getAvailableSlots(
-    @Query('serviceId') serviceId: string,
-    @Query('date') date: string,
-  ) {
-    return this.bookingsService.getAvailableSlots(serviceId, date);
+  async getAvailableSlots(@Query() query: GetAvailableSlotsDto) {
+    return this.bookingsService.getAvailableSlots(query.serviceId, query.date);
   }
 
   /**
@@ -53,11 +53,10 @@ export class BookingsController {
    */
   @Get('service/:serviceId/blocks')
   async getServiceBookingBlocks(
-    @Param('serviceId') serviceId: string,
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
+    @Param('serviceId', ParseUUIDPipe) serviceId: string,
+    @Query() query: GetServiceBookingBlocksDto,
   ) {
-    return this.bookingsService.getServiceBookingBlocks(serviceId, startDate, endDate);
+    return this.bookingsService.getServiceBookingBlocks(serviceId, query.startDate, query.endDate);
   }
 
   /**
@@ -118,7 +117,7 @@ export class BookingsController {
   @Patch(':id/cancel')
   @Roles('customer')
   async cancelBooking(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @GetUser('sub') customerId: string,
   ) {
     return this.bookingsService.cancelBooking(id, customerId);
@@ -130,7 +129,7 @@ export class BookingsController {
   @Patch(':id/owner-cancel')
   @Roles('owner')
   async cancelOwnerBooking(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @GetUser('sub') ownerId: string,
   ) {
     return this.bookingsService.cancelOwnerBooking(id, ownerId);

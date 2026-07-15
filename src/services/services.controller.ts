@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, ParseUUIDPipe } from '@nestjs/common';
 import { ServicesService } from './services.service';
 import { CreateServiceDto } from './dto/create-service.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
@@ -33,7 +33,7 @@ export class ServicesController {
   @Patch(':id')
   @Roles('owner')
   async update(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() updateServiceDto: UpdateServiceDto,
     @GetUser('sub') ownerId: string,
   ) {
@@ -43,7 +43,7 @@ export class ServicesController {
   @Delete(':id')
   @Roles('owner')
   async remove(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @GetUser('sub') ownerId: string,
   ) {
     return this.servicesService.remove(id, ownerId);
@@ -54,7 +54,7 @@ export class ServicesController {
   @Get(':id/exceptions')
   @Roles('owner')
   async getExceptions(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @GetUser('sub') ownerId: string,
   ) {
     return this.servicesService.getExceptions(id, ownerId);
@@ -63,7 +63,7 @@ export class ServicesController {
   @Post(':id/exceptions')
   @Roles('owner')
   async createException(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CreateExceptionDto,
     @GetUser('sub') ownerId: string,
   ) {
@@ -73,8 +73,8 @@ export class ServicesController {
   @Delete(':id/exceptions/:exId')
   @Roles('owner')
   async deleteException(
-    @Param('id') id: string,
-    @Param('exId') exId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('exId', ParseUUIDPipe) exId: string,
     @GetUser('sub') ownerId: string,
   ) {
     return this.servicesService.deleteException(id, exId, ownerId);

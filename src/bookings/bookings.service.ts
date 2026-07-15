@@ -5,6 +5,7 @@ import {
   ConflictException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 
@@ -232,7 +233,23 @@ export class BookingsService {
       );
     }
 
-    // Create booking + notifications in a single transaction
+    // ── Step 3: Validate slot alignment ──────────────────────────────────────
+    // The requested startTime must fall exactly on a duration-grid boundary starting
+    // from the window's start hour. E.g. a 30-min service starting at 09:00 only
+    // allows slots at 09:00, 09:30, 10:00 … — NOT at 09:05 or 09:17.
+    const [wsH2, wsM2] = windowStart.split(':').map(Number);
+    const winStartMs = Date.UTC(year, month - 1, day, wsH2, wsM2, 0, 0);
+    const offsetMs = startDate.getTime() - winStartMs;
+    const durationMs2 = service.duration * 60 * 1000;
+    if (offsetMs < 0 || offsetMs % durationMs2 !== 0) {
+      throw new BadRequestException(
+        `Slot must align to the ${service.duration}-minute grid starting from ${windowStart}.`,
+      );
+    }
+
+    // Create booking + notifications in a serializable transaction to prevent double-booking.
+    // With Serializable isolation PostgreSQL detects read/write conflicts between concurrent
+    // requests for the same slot and aborts one with error code P2034 (caught by HttpExceptionFilter).
     return this.prisma.$transaction(async (tx) => {
       // Check for conflicts (SELECT … FOR UPDATE via serializable TX)
       const conflict = await tx.booking.findFirst({
@@ -293,7 +310,7 @@ export class BookingsService {
       });
 
       return booking;
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   // ─── Owner: Update Booking Status ─────────────────────────────────────────

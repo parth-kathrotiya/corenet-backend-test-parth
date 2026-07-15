@@ -1,6 +1,6 @@
 # BookSlot System Design Document
 
-This document outlines the architectural decisions, database models, API specifications, authentication flow, and edge-case handling for **BookSlot**, an appointment booking platform.
+This document outlines the architectural decisions, database models, API specifications, authentication flow, edge-case handling, and testing strategy for **BookSlot**, an appointment booking platform.
 
 ---
 
@@ -154,64 +154,100 @@ Stores notifications for owners and customers.
 
 ## 2. API Surface
 
-All API responses follow a consistent JSON format:
+All API responses follow a consistent JSON format enforced by a global `HttpExceptionFilter`:
 - **Success**: Return raw object/array or wrapped JSON.
-- **Errors**: `{ "statusCode": HTTP_STATUS, "message": "Error details", "error": "Error Name" }`
+- **Errors**:
+```json
+{
+  "statusCode": 400,
+  "timestamp": "2026-07-15T10:30:00.000Z",
+  "path": "/api/bookings",
+  "message": "Error details or array of validation errors",
+  "error": "Bad Request"
+}
+```
 
 ### Authentication & Profiles
 *   `POST /api/auth/register`
     *   **Access**: Public
-    *   **Body**: `{ "email": "string", "password": "safe_password", "name": "Name", "role": "OWNER | CUSTOMER" }`
+    *   **Body**: `{ "email": "string", "password": "safe_password", "name": "Name", "role": "owner | customer" }`
     *   **Response**: `201 Created` with the registered user profile (excluding password).
 *   `POST /api/auth/login`
     *   **Access**: Public
     *   **Body**: `{ "email": "string", "password": "safe_password" }`
-    *   **Response**: `200 OK` with `{ "accessToken": "JWT_TOKEN" }`.
+    *   **Response**: `200 OK` with `{ "token": "JWT_TOKEN", "user": { ... } }`.
 
 ### Services (Owner Only for Write Operations)
 *   `POST /api/services`
     *   **Access**: Registered `OWNER`
-    *   **Body**: `{ "name": "Haircut", "duration": 30, "price": 2500 }`
+    *   **Body**: `{ "name": "Haircut", "duration": 30, "price": 2500, "availabilities": [...] }`
     *   **Response**: `201 Created` with created service object.
 *   `GET /api/services`
-    *   **Access**: Registered `OWNER` (returns owned services) / Public or `CUSTOMER` (returns all active services)
+    *   **Access**: Registered `OWNER` (returns owned services with availabilities + exceptions) / `CUSTOMER` (returns all active services with owner name)
     *   **Response**: `200 OK` with service array.
 *   `PATCH /api/services/:id`
-    *   **Access**: Registered `OWNER` (must own the service)
-    *   **Body**: `{ "name"?: "New Name", "duration"?: 45, "price"?: 3000 }`
+    *   **Access**: Registered `OWNER` (must own the service). `:id` must be a valid UUID v4.
+    *   **Body**: `{ "name"?: "New Name", "duration"?: 45, "price"?: 3000, "availabilities"?: [...] }`
+    *   **Guard**: If `duration` changes and active future bookings exist, returns `400 Bad Request`.
     *   **Response**: `200 OK` with updated service object.
 *   `DELETE /api/services/:id`
-    *   **Access**: Registered `OWNER` (must own the service)
+    *   **Access**: Registered `OWNER` (must own the service). `:id` must be a valid UUID v4.
     *   **Response**: `200 OK` with soft-deleted confirmation details.
 
-### Availability (Owner Only)
-*   `POST /api/availability`
-    *   **Access**: Registered `OWNER`
-    *   **Body**: `{ "schedules": [{ "dayOfWeek": 1, "startTime": "09:00", "endTime": "17:00" }] }`
-    *   **Response**: `201 Created` with the updated weekly availability list.
-*   `GET /api/availability/me`
-    *   **Access**: Registered `OWNER`
-    *   **Response**: `200 OK` with current availability.
+### Availability Exceptions (Owner Only)
+*   `GET /api/services/:id/exceptions`
+    *   **Access**: Registered `OWNER` (must own the service)
+    *   **Response**: `200 OK` with list of all date exceptions for the service.
+*   `POST /api/services/:id/exceptions`
+    *   **Access**: Registered `OWNER` (must own the service)
+    *   **Body**: `{ "date": "YYYY-MM-DD", "is_working": true, "start_time": "10:00", "end_time": "14:00" }`
+    *   **Response**: `201 Created` with the created exception.
+*   `DELETE /api/services/:id/exceptions/:exId`
+    *   **Access**: Registered `OWNER` (must own the service)
+    *   **Response**: `200 OK` with deletion confirmation.
 
 ### Bookings (Customer & Owner Operations)
 *   `GET /api/bookings/available-slots`
-    *   **Access**: Public / `CUSTOMER`
-    *   **Query Params**: `serviceId` (UUID), `date` (YYYY-MM-DD)
-    *   **Response**: `200 OK` with list of free start times: `["09:00", "09:30", "10:00", ...]`
+    *   **Access**: Any authenticated user
+    *   **Query Params**: `serviceId` (UUID v4, required), `date` (YYYY-MM-DD, required)
+    *   **Response**: `200 OK` with list of free ISO-8601 start times: `["2026-07-20T09:00:00.000Z", ...]`
 *   `POST /api/bookings`
     *   **Access**: Registered `CUSTOMER`
     *   **Body**: `{ "serviceId": "UUID", "startTime": "2026-07-20T10:00:00.000Z" }`
     *   **Response**: `201 Created` with booking object.
+*   `GET /api/bookings/my`
+    *   **Access**: Registered `CUSTOMER`
+    *   **Query Params**: `serviceId` (optional UUID to filter)
+    *   **Response**: `200 OK` with customer's own bookings.
 *   `PATCH /api/bookings/:id/cancel`
-    *   **Access**: Registered `CUSTOMER` (must be the booking owner)
-    *   **Response**: `200 OK` with booking status marked as `'CANCELLED'`.
+    *   **Access**: Registered `CUSTOMER` (must be the booking owner). `:id` must be a valid UUID v4.
+    *   **Response**: `200 OK` with booking status marked as `'cancelled'`.
 *   `GET /api/bookings/owner`
     *   **Access**: Registered `OWNER`
-    *   **Response**: `200 OK` returning all upcoming bookings for their services.
-*   `PATCH /api/bookings/:id/status`
-    *   **Access**: Registered `OWNER` (must own the booking's service)
-    *   **Body**: `{ "status": "COMPLETED | NOSHOW" }`
+    *   **Response**: `200 OK` returning all upcoming (pending/confirmed) bookings for their services.
+*   `GET /api/bookings/owner/all`
+    *   **Access**: Registered `OWNER`
+    *   **Response**: `200 OK` returning all bookings (past + future) for their services.
+*   `GET /api/bookings/owner/stats`
+    *   **Access**: Registered `OWNER`
+    *   **Response**: `200 OK` with `{ todayBookings, weekBookings, weekRevenue, totalRevenue, activeServices }`.
+*   `PATCH /api/bookings/:id/owner-status`
+    *   **Access**: Registered `OWNER` (must own the booking's service). `:id` must be a valid UUID v4.
+    *   **Body**: `{ "status": "confirmed | cancelled | completed | noshow" }`
     *   **Response**: `200 OK` with updated booking.
+*   `PATCH /api/bookings/:id/owner-cancel`
+    *   **Access**: Registered `OWNER` (must own the booking's service). `:id` must be a valid UUID v4.
+    *   **Response**: `200 OK` with booking status marked as `'cancelled'`.
+*   `GET /api/bookings/service/:serviceId/blocks`
+    *   **Access**: Any authenticated user. `:serviceId` must be a valid UUID v4.
+    *   **Query Params**: `startDate` (YYYY-MM-DD, required), `endDate` (YYYY-MM-DD, required)
+    *   **Response**: `200 OK` with `[{ start_time, end_time, status }]` for all booked/blocked slots.
+
+### Notifications
+*   `GET /api/notifications` — Returns all notifications for the logged-in user.
+*   `GET /api/notifications/unread-count` — Returns count of unread notifications.
+*   `PATCH /api/notifications/read-all` — Marks all user notifications as read.
+*   `PATCH /api/notifications/:id/read` — Marks a single notification as read.
 
 ---
 
@@ -236,16 +272,17 @@ All API responses follow a consistent JSON format:
 ### 1. Concurrent Bookings (Double Booking Prevention)
 *   **Problem**: Two customers attempt to book the exact same slot at the exact same millisecond.
 *   **Handling**:
-    1.  We utilize a **PostgreSQL Transaction** with `SERIALIZABLE` isolation level, OR we lock the owner's schedule row for update (`SELECT ... FOR UPDATE`).
-    2.  Within the transaction, we query conflicting bookings:
+    1.  The `createBooking` transaction runs at `Serializable` PostgreSQL isolation level (`Prisma.TransactionIsolationLevel.Serializable`).
+    2.  Within the transaction, we first query conflicting bookings:
         ```sql
-        SELECT * FROM "Booking"
-        WHERE "ownerId" = :ownerId
-          AND "status" NOT IN ('CANCELLED', 'NOSHOW')
-          AND "startTime" < :newBookingEndTime
-          AND "endTime" > :newBookingStartTime;
+        SELECT * FROM "bookings"
+        WHERE "service_id" = :serviceId
+          AND "status" IN ('pending', 'confirmed')
+          AND "start_time" < :newBookingEndTime
+          AND "end_time" > :newBookingStartTime;
         ```
-    3.  If any conflicting records exist, the transaction immediately rolls back and throws a `409 Conflict` exception.
+    3.  If a conflict exists, a `409 Conflict` exception is thrown immediately.
+    4.  If two requests execute simultaneously and both pass the initial conflict check, PostgreSQL's Serializable isolation detects the read/write dependency and aborts one transaction with error code `P2034`, which the global `HttpExceptionFilter` translates into a `409 Conflict` response.
 
 ### 2. Bookings Outside Business Hours & Days
 *   **Problem**: A customer tries to book a slot when the owner is closed or on a weekend.
@@ -276,10 +313,68 @@ All API responses follow a consistent JSON format:
 *   **Handling**:
     *   The booking route checks if `startTime` is less than `Date.now() + 15 minutes` (preventing last-second bookings in the past or present).
 
+### 7. Slot Grid Alignment
+*   **Problem**: A customer submits an arbitrary start time like `09:17` for a 30-minute service that starts at `09:00`.
+*   **Handling**:
+    *   Before creating a booking, the service calculates `offset = startTime - windowStart`. If `offset % serviceDuration !== 0`, the request is rejected with `400 Bad Request` (e.g., `"Slot must align to the 30-minute grid starting from 09:00"`).
+    *   This ensures all bookings fall exactly on the same grid as the `GET /api/bookings/available-slots` response.
+
+### 8. Service Duration Changed Under Active Bookings
+*   **Problem**: An owner changes a service's duration from 30 to 60 minutes when existing confirmed bookings are scheduled.
+*   **Handling**:
+    *   The `PATCH /api/services/:id` handler counts active future bookings (`pending` or `confirmed` with `start_time >= now`).
+    *   If any exist, the request returns `400 Bad Request` with a message indicating how many bookings must be resolved first.
+    *   This prevents slot boundary corruption where previously valid 30-minute slots would be split or overlap under a new 60-minute grid.
+
 ---
 
-## 5. Assumptions
+## 5. Error Response Format
+
+All errors are formatted consistently by the global `HttpExceptionFilter` registered in `main.ts`:
+
+```json
+{
+  "statusCode": 400,
+  "timestamp": "2026-07-15T10:30:00.000Z",
+  "path": "/api/bookings",
+  "message": "Slot must align to the 30-minute grid starting from 09:00.",
+  "error": "Bad Request"
+}
+```
+
+Prisma database errors are also mapped:
+| Prisma Code | HTTP Status | Scenario |
+|---|---|---|
+| `P2002` | `409 Conflict` | Duplicate unique field (e.g., email on register) |
+| `P2025` | `404 Not Found` | Record not found during update/delete |
+| `P2034` | `409 Conflict` | Serializable transaction abort due to concurrent booking |
+
+---
+
+## 6. Assumptions
 
 1.  **Standard UTC Time Storage**: All booking times are stored in UTC in the database. The client is responsible for local timezone formatting.
-2.  **Slot Grid Definition**: Available slots are generated at regular 30-minute intervals within the owner's availability window. (e.g. if the owner is available from 09:00 to 11:00, slots are offered at 09:00, 09:30, and 10:00, assuming a 30-minute service).
-3.  **Booking Duration Consistency**: A booking lasts exactly the duration of the associated service.
+2.  **Slot Grid Definition**: Available slots are generated at `service.duration`-minute intervals within the owner's availability window (e.g., a 30-min service open from 09:00 to 17:00 yields slots at 09:00, 09:30 … 16:30).
+3.  **Booking Duration Consistency**: A booking lasts exactly the duration of the associated service at creation time. Changing duration later is blocked by the active-bookings guard.
+4.  **Exception Priority**: Specific date exceptions always override weekly availability. If an exception marks a day as closed, no bookings can be created even if weekly availability says open.
+5.  **Notification Fan-out**: Every booking lifecycle event (creation, confirmation, cancellation, completion, no-show) triggers at least one notification to the affected party within the same database transaction.
+
+---
+
+## 7. Testing Strategy
+
+### Unit Tests (`src/bookings/bookings.service.spec.ts`)
+
+All 27 unit tests run without a live database using Jest with a fully mocked `PrismaService`.
+
+| Method | Test Cases |
+|---|---|
+| `createBooking` | Success + notifications; NotFoundException (no service); BadRequest (past); BadRequest (15-min buffer); BadRequest (closed day); BadRequest (outside hours); BadRequest (off-grid slot); ConflictException (double-book); Exception override |
+| `getAvailableSlots` | Normal open day (16 slots); Closed day (0 slots); Booked slot filtered out; Exception override (closed); NotFoundException; Invalid date format |
+| `cancelBooking` | Success + owner notified; NotFoundException; ForbiddenException (wrong customer); BadRequest (already cancelled); BadRequest (already completed); BadRequest (past booking) |
+| `updateOwnerBookingStatus` | Confirm pending; ForbiddenException (wrong owner); BadRequest (invalid status); BadRequest (completing future booking); Success completing past booking; NotFoundException |
+
+```bash
+# Run all unit tests from the backend directory
+npm run test
+```

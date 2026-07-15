@@ -111,6 +111,25 @@ export class ServicesService {
 
     const { name, duration, price, availabilities } = updateServiceDto;
 
+    // Guard: prevent changing service duration when active future bookings exist.
+    // Changing duration would shift every slot boundary and make existing confirmed
+    // or pending appointments collide with slots the owner would never have offered.
+    if (duration !== undefined && duration !== service.duration) {
+      const futureBookingCount = await this.prisma.booking.count({
+        where: {
+          service_id: id,
+          status: { in: ['pending', 'confirmed'] },
+          start_time: { gte: new Date() },
+        },
+      });
+      if (futureBookingCount > 0) {
+        throw new BadRequestException(
+          `Cannot change duration: ${futureBookingCount} active future booking(s) exist. ` +
+          'Cancel or complete them first.',
+        );
+      }
+    }
+
     return this.prisma.$transaction(async (tx) => {
       // Update basic fields
       await tx.service.update({
